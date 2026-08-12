@@ -178,8 +178,20 @@ export const YouTubeAudioPlayer: React.FC<YouTubeAudioPlayerProps> = ({
     return () => clearInterval(interval);
   }, [isPlaying]);
 
+  if (!youtubeId) {
+    return (
+      <div ref={containerRef} className="hidden">
+        <div id="yt-audio-element" />
+      </div>
+    );
+  }
+
   return (
-    <div ref={containerRef} className="fixed -left-[9999px] top-0 w-[320px] h-[180px] pointer-events-none opacity-0 z-0">
+    <div
+      ref={containerRef}
+      className="fixed -left-[9999px] top-0 w-1 h-1 pointer-events-none opacity-0 z-0"
+      aria-hidden="true"
+    >
       <div id="yt-audio-element" />
     </div>
   );

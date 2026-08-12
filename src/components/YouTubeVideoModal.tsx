@@ -36,7 +36,7 @@ export const YouTubeVideoModal: React.FC<YouTubeVideoModalProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <a
-                href={`https://www.youtube.com/watch?v=N0jnLZxYwYc&list=PLeatb7hupNV_AWUl_7ttbsKeCQh8tF5N4`}
+                href={`https://www.youtube.com/watch?v=${youtubeId}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-amber-300 hover:underline flex items-center gap-1 mr-2"

@@ -114,19 +114,39 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
     // 1. Direct YouTube Video Link or Video ID Check (Instant Zero-API)
     const directYtId = extractYouTubeId(q);
     if (directYtId) {
+      let songTitle = `YouTube Video (${directYtId})`;
+      let channelName = 'Direct YouTube Stream';
+      let thumbUrl = `https://i.ytimg.com/vi/${directYtId}/hqdefault.jpg`;
+
+      // Fetch real video metadata using free CORS-friendly YouTube oEmbed
+      try {
+        const oembedRes = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${directYtId}`);
+        if (oembedRes.ok) {
+          const odata = await oembedRes.json();
+          if (odata.title) songTitle = odata.title;
+          if (odata.author_name) channelName = odata.author_name;
+          if (odata.thumbnail_url) thumbUrl = odata.thumbnail_url;
+        }
+      } catch {
+        // use fallback title & thumbnail
+      }
+
       const directTrack: Track = {
         id: `yt-direct-${directYtId}-${Date.now()}`,
         youtubeId: directYtId,
-        title: `YouTube Video (${directYtId})`,
-        artist: 'Direct YouTube Link',
+        title: songTitle,
+        artist: channelName,
         movie: 'YouTube Online Stream 📻',
         duration: '4:00',
         durationSeconds: 240,
-        thumbnail: `https://i.ytimg.com/vi/${directYtId}/hqdefault.jpg`,
+        thumbnail: thumbUrl,
         description: 'Direct YouTube Stream'
       };
+
       setYtSearchResults([directTrack]);
       setIsSearchingYt(false);
+      onSelectTrack(directTrack);
+      setShowPlaylist(false);
       return;
     }
 
@@ -134,51 +154,86 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       let tracksFound: Track[] = [];
       const encoded = encodeURIComponent(q);
 
-      // 2. Query free public open-source Invidious & Piped music mirrors
-      const publicEndpoints = [
-        `https://pipedapi.kavin.rocks/search?q=${encoded}&filter=all`,
-        `https://api.piped.privacydev.net/search?q=${encoded}&filter=all`,
-        `https://inv.tux.pizza/api/v1/search?q=${encoded}&type=video`,
-        `https://invidious.projectsegfau.lt/api/v1/search?q=${encoded}&type=video`,
-        `https://invidious.privacydev.net/api/v1/search?q=${encoded}&type=video`,
-      ];
-
-      for (const url of publicEndpoints) {
+      // 2. Official Google YouTube Data API v3 Search (Primary)
+      const YT_KEY = (import.meta.env.VITE_YOUTUBE_API_KEY || 'AIzaSyCokO65F1348yAwjeARYhrM6jXnrkAH224').trim();
+      if (YT_KEY) {
         try {
-          const instController = new AbortController();
-          const instTimeout = setTimeout(() => instController.abort(), 2200);
-          const res = await fetch(url, { signal: instController.signal });
-          clearTimeout(instTimeout);
-
-          if (res.ok) {
-            const data = await res.json();
-            const items = Array.isArray(data) ? data : (data.items || []);
-            if (items.length > 0) {
-              tracksFound = items.slice(0, 8).map((item: any, idx: number) => {
-                const videoId = item.videoId || item.id?.videoId || (typeof item.id === 'string' ? item.id : null);
-                const title = item.title || item.snippet?.title || `${q} Track ${idx + 1}`;
-                const artist = item.uploaderName || item.author || item.snippet?.channelTitle || 'YouTube Stream';
-                const thumbnail = item.thumbnail || item.videoThumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-                const durationSec = item.duration || 250;
-
+          const ytUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encoded}&type=video&key=${YT_KEY}`;
+          const ytRes = await fetch(ytUrl);
+          if (ytRes.ok) {
+            const ytData = await ytRes.json();
+            if (ytData.items && ytData.items.length > 0) {
+              tracksFound = ytData.items.map((item: any, idx: number) => {
+                const videoId = item.id?.videoId || item.id;
+                const snippet = item.snippet || {};
+                const rawTitle = snippet.title || 'YouTube Track';
+                const cleanTitle = rawTitle.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
                 return {
-                  id: `yt-noapi-${videoId || idx}-${Date.now()}`,
-                  youtubeId: videoId || '',
-                  title,
-                  artist,
-                  movie: 'YouTube Stream 📻',
-                  duration: item.duration ? `${Math.floor(item.duration / 60)}:${String(item.duration % 60).padStart(2, '0')}` : '4:15',
-                  durationSeconds: durationSec,
-                  thumbnail,
-                  description: 'Online Stream'
+                  id: `yt-official-${videoId || idx}-${Date.now()}`,
+                  youtubeId: videoId,
+                  title: cleanTitle,
+                  artist: snippet.channelTitle || 'YouTube Channel',
+                  movie: 'Official YouTube Stream 📻',
+                  duration: '4:15',
+                  durationSeconds: 255,
+                  thumbnail: snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                  description: snippet.description || 'YouTube Music Track'
                 };
               }).filter((t: Track) => t.youtubeId);
-
-              if (tracksFound.length > 0) break;
             }
           }
         } catch {
-          continue;
+          // continue to fallbacks
+        }
+      }
+
+      // 3. Fallback: Query free public open-source Invidious & Piped music mirrors
+      if (tracksFound.length === 0) {
+        const publicEndpoints = [
+          `https://pipedapi.kavin.rocks/search?q=${encoded}&filter=all`,
+          `https://api.piped.privacydev.net/search?q=${encoded}&filter=all`,
+          `https://inv.tux.pizza/api/v1/search?q=${encoded}&type=video`,
+          `https://invidious.projectsegfau.lt/api/v1/search?q=${encoded}&type=video`,
+          `https://invidious.privacydev.net/api/v1/search?q=${encoded}&type=video`,
+        ];
+
+        for (const url of publicEndpoints) {
+          try {
+            const instController = new AbortController();
+            const instTimeout = setTimeout(() => instController.abort(), 2200);
+            const res = await fetch(url, { signal: instController.signal });
+            clearTimeout(instTimeout);
+
+            if (res.ok) {
+              const data = await res.json();
+              const items = Array.isArray(data) ? data : (data.items || []);
+              if (items.length > 0) {
+                tracksFound = items.slice(0, 8).map((item: any, idx: number) => {
+                  const videoId = item.videoId || item.id?.videoId || (typeof item.id === 'string' ? item.id : null);
+                  const title = item.title || item.snippet?.title || `${q} Track ${idx + 1}`;
+                  const artist = item.uploaderName || item.author || item.snippet?.channelTitle || 'YouTube Stream';
+                  const thumbnail = item.thumbnail || item.videoThumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+                  const durationSec = item.duration || 250;
+
+                  return {
+                    id: `yt-noapi-${videoId || idx}-${Date.now()}`,
+                    youtubeId: videoId || '',
+                    title,
+                    artist,
+                    movie: 'YouTube Stream 📻',
+                    duration: item.duration ? `${Math.floor(item.duration / 60)}:${String(item.duration % 60).padStart(2, '0')}` : '4:15',
+                    durationSeconds: durationSec,
+                    thumbnail,
+                    description: 'Online Stream'
+                  };
+                }).filter((t: Track) => t.youtubeId);
+
+                if (tracksFound.length > 0) break;
+              }
+            }
+          } catch {
+            continue;
+          }
         }
       }
 
