@@ -35,6 +35,21 @@ interface MusicPlayerProps {
   onToggleMute: () => void;
 }
 
+// Helper to parse YouTube ISO 8601 duration string (e.g. PT4M15S, PT1H23M4S)
+const parseISO8601Duration = (iso: string) => {
+  if (!iso) return { formatted: '4:00', seconds: 240 };
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return { formatted: '4:00', seconds: 240 };
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseInt(match[3] || '0', 10);
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+  const formatted = hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
+  return { formatted, seconds: totalSeconds };
+};
+
 export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   tracks,
   currentTrack,
@@ -117,18 +132,43 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       let songTitle = `YouTube Video (${directYtId})`;
       let channelName = 'Direct YouTube Stream';
       let thumbUrl = `https://i.ytimg.com/vi/${directYtId}/hqdefault.jpg`;
+      let durationStr = '4:00';
+      let durSec = 240;
 
-      // Fetch real video metadata using free CORS-friendly YouTube oEmbed
-      try {
-        const oembedRes = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${directYtId}`);
-        if (oembedRes.ok) {
-          const odata = await oembedRes.json();
-          if (odata.title) songTitle = odata.title;
-          if (odata.author_name) channelName = odata.author_name;
-          if (odata.thumbnail_url) thumbUrl = odata.thumbnail_url;
+      const YT_KEY = (import.meta.env.VITE_YOUTUBE_API_KEY || 'AIzaSyCokO65F1348yAwjeARYhrM6jXnrkAH224').trim();
+      if (YT_KEY) {
+        try {
+          const detailRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${directYtId}&key=${YT_KEY}`);
+          if (detailRes.ok) {
+            const detailData = await detailRes.json();
+            if (detailData.items && detailData.items[0]) {
+              const item = detailData.items[0];
+              if (item.snippet?.title) songTitle = item.snippet.title.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+              if (item.snippet?.channelTitle) channelName = item.snippet.channelTitle;
+              if (item.snippet?.thumbnails?.high?.url) thumbUrl = item.snippet.thumbnails.high.url;
+              const { formatted, seconds } = parseISO8601Duration(item.contentDetails?.duration);
+              durationStr = formatted;
+              durSec = seconds;
+            }
+          }
+        } catch {
+          // fallback to oembed
         }
-      } catch {
-        // use fallback title & thumbnail
+      }
+
+      if (durationStr === '4:00') {
+        // Fetch real video metadata using free CORS-friendly YouTube oEmbed
+        try {
+          const oembedRes = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${directYtId}`);
+          if (oembedRes.ok) {
+            const odata = await oembedRes.json();
+            if (odata.title) songTitle = odata.title;
+            if (odata.author_name) channelName = odata.author_name;
+            if (odata.thumbnail_url) thumbUrl = odata.thumbnail_url;
+          }
+        } catch {
+          // use fallback title & thumbnail
+        }
       }
 
       const directTrack: Track = {
@@ -137,8 +177,8 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
         title: songTitle,
         artist: channelName,
         movie: 'YouTube Online Stream 📻',
-        duration: '4:00',
-        durationSeconds: 240,
+        duration: durationStr,
+        durationSeconds: durSec,
         thumbnail: thumbUrl,
         description: 'Direct YouTube Stream'
       };
@@ -163,23 +203,40 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
           if (ytRes.ok) {
             const ytData = await ytRes.json();
             if (ytData.items && ytData.items.length > 0) {
-              tracksFound = ytData.items.map((item: any, idx: number) => {
-                const videoId = item.id?.videoId || item.id;
-                const snippet = item.snippet || {};
-                const rawTitle = snippet.title || 'YouTube Track';
-                const cleanTitle = rawTitle.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
-                return {
-                  id: `yt-official-${videoId || idx}-${Date.now()}`,
-                  youtubeId: videoId,
-                  title: cleanTitle,
-                  artist: snippet.channelTitle || 'YouTube Channel',
-                  movie: 'Official YouTube Stream 📻',
-                  duration: '4:15',
-                  durationSeconds: 255,
-                  thumbnail: snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                  description: snippet.description || 'YouTube Music Track'
-                };
-              }).filter((t: Track) => t.youtubeId);
+              const videoIds = ytData.items
+                .map((item: any) => item.id?.videoId || item.id)
+                .filter(Boolean)
+                .join(',');
+
+              if (videoIds) {
+                const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${videoIds}&key=${YT_KEY}`;
+                const detailsRes = await fetch(detailsUrl);
+                if (detailsRes.ok) {
+                  const detailsData = await detailsRes.json();
+                  if (detailsData.items && detailsData.items.length > 0) {
+                    tracksFound = detailsData.items.map((item: any, idx: number) => {
+                      const videoId = item.id;
+                      const snippet = item.snippet || {};
+                      const contentDetails = item.contentDetails || {};
+                      const rawTitle = snippet.title || 'YouTube Track';
+                      const cleanTitle = rawTitle.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+                      const { formatted, seconds } = parseISO8601Duration(contentDetails.duration);
+
+                      return {
+                        id: `yt-official-${videoId || idx}-${Date.now()}`,
+                        youtubeId: videoId,
+                        title: cleanTitle,
+                        artist: snippet.channelTitle || 'YouTube Channel',
+                        movie: 'Official YouTube Stream 📻',
+                        duration: formatted,
+                        durationSeconds: seconds,
+                        thumbnail: snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                        description: snippet.description || 'YouTube Music Track'
+                      };
+                    }).filter((t: Track) => t.youtubeId);
+                  }
+                }
+              }
             }
           }
         } catch {
