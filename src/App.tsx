@@ -546,6 +546,11 @@ export default function App() {
         }}
         seekTime={seekTime}
         onSeekHandled={() => setSeekTime(null)}
+        currentTrack={currentTrack}
+        onPlayPause={handlePlayPause}
+        onNextTrack={handleNextTrack}
+        onPrevTrack={handlePrevTrack}
+        onSeek={handleSeek}
       />
 
       {/* Dedicated Horn Sound Player */}
