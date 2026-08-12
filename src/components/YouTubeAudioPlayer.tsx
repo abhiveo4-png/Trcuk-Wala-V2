@@ -20,15 +20,22 @@ interface YouTubeAudioPlayerProps {
 // Minimal 1-second silent WAV audio data URI to maintain background audio wake-lock on mobile devices
 const SILENT_AUDIO_URI = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 
-// Public Piped / Invidious API instances for extracting direct native audio streams
+// Comprehensive list of public Piped / Invidious API instances for fast parallel direct audio stream extraction
 const PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://pipedapi.mha.fi',
+  'https://pipedapi.astro.im',
   'https://api.piped.privacydev.net',
   'https://pipedapi.col2.im',
   'https://pipedapi.sync.mobi',
+  'https://yewtu.be',
   'https://inv.tux.pizza',
-  'https://invidious.projectsegfau.lt',
+  'https://invidious.nerdvpn.de',
+  'https://vid.puffyan.us',
+  'https://invidious.drgns.space',
   'https://invidious.privacydev.net',
+  'https://invidious.projectsegfau.lt',
 ];
 
 export const YouTubeAudioPlayer: React.FC<YouTubeAudioPlayerProps> = ({
@@ -51,11 +58,12 @@ export const YouTubeAudioPlayer: React.FC<YouTubeAudioPlayerProps> = ({
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const nativeAudioRef = useRef<HTMLAudioElement | null>(null);
   const wakeLockRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   const [directAudioUrl, setDirectAudioUrl] = useState<string | null>(null);
   const [useNativeAudio, setUseNativeAudio] = useState<boolean>(false);
 
-  // Request Wake Lock if available
+  // Request Screen Wake Lock if available
   const requestWakeLock = async () => {
     try {
       if ('wakeLock' in navigator) {
@@ -66,61 +74,107 @@ export const YouTubeAudioPlayer: React.FC<YouTubeAudioPlayerProps> = ({
     }
   };
 
-  // 1. Fetch direct native audio stream for seamless lock-screen & background playback
+  // Web Audio Context Keep-Alive for mobile background process retention
+  const initWebAudioKeepAlive = () => {
+    try {
+      if (!audioContextRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          gain.gain.value = 0.001; // virtually silent
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          audioContextRef.current = ctx;
+        }
+      } else if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().catch(() => {});
+      }
+    } catch {
+      // ignore web audio error
+    }
+  };
+
+  // 1. Fetch direct native audio stream in parallel for seamless lock-screen & background playback
   useEffect(() => {
     if (!youtubeId) return;
     let isCancelled = false;
+    const abortController = new AbortController();
 
-    const fetchAudioStream = async () => {
+    const fetchSingleInstance = async (instance: string): Promise<string> => {
+      const isPiped = instance.includes('piped');
+      const endpoint = isPiped ? `${instance}/streams/${youtubeId}` : `${instance}/api/v1/videos/${youtubeId}`;
+      const timeoutController = new AbortController();
+      const timer = setTimeout(() => timeoutController.abort(), 3000);
+
+      const onAbort = () => timeoutController.abort();
+      abortController.signal.addEventListener('abort', onAbort);
+
+      try {
+        const res = await fetch(endpoint, { signal: timeoutController.signal });
+        clearTimeout(timer);
+        abortController.signal.removeEventListener('abort', onAbort);
+
+        if (!res.ok) throw new Error(`Instance ${instance} error ${res.status}`);
+        const data = await res.json();
+        let audioStream: string | null = null;
+
+        if (isPiped && Array.isArray(data.audioStreams)) {
+          const sorted = [...data.audioStreams].sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+          audioStream = sorted[0]?.url || null;
+        } else if (!isPiped && Array.isArray(data.adaptiveFormats)) {
+          const audioFormats = data.adaptiveFormats.filter((f: any) =>
+            f.type?.includes('audio') || f.mimeType?.includes('audio')
+          );
+          audioStream = audioFormats[0]?.url || null;
+        }
+
+        if (audioStream) return audioStream;
+        throw new Error('No audio format found');
+      } catch (err) {
+        clearTimeout(timer);
+        abortController.signal.removeEventListener('abort', onAbort);
+        throw err;
+      }
+    };
+
+    const fetchAudioStreamParallel = async () => {
       setDirectAudioUrl(null);
       setUseNativeAudio(false);
 
-      for (const instance of PIPED_INSTANCES) {
-        if (isCancelled) break;
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 2000);
-          const isPiped = instance.includes('piped');
-          const endpoint = isPiped ? `${instance}/streams/${youtubeId}` : `${instance}/api/v1/videos/${youtubeId}`;
+      try {
+        // Query instances in parallel using Promise.any for instant resolution
+        const streamUrl = await Promise.any(
+          PIPED_INSTANCES.map((inst) => fetchSingleInstance(inst))
+        );
 
-          const res = await fetch(endpoint, { signal: controller.signal });
-          clearTimeout(timer);
+        if (!isCancelled && streamUrl) {
+          setDirectAudioUrl(streamUrl);
+          setUseNativeAudio(true);
+          initWebAudioKeepAlive();
 
-          if (res.ok) {
-            const data = await res.json();
-            let audioStream: string | null = null;
-
-            if (isPiped && Array.isArray(data.audioStreams)) {
-              // Pick highest bitrate M4A/WebM audio stream
-              const sorted = [...data.audioStreams].sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-              audioStream = sorted[0]?.url || null;
-            } else if (!isPiped && Array.isArray(data.adaptiveFormats)) {
-              const audioFormats = data.adaptiveFormats.filter((f: any) => f.type?.includes('audio') || f.mimeType?.includes('audio'));
-              audioStream = audioFormats[0]?.url || null;
-            }
-
-            if (audioStream && !isCancelled) {
-              setDirectAudioUrl(audioStream);
-              setUseNativeAudio(true);
-              // Pause iframe if running
-              if (playerRef.current && isReadyRef.current && typeof playerRef.current.pauseVideo === 'function') {
-                try {
-                  playerRef.current.pauseVideo();
-                } catch (e) {}
-              }
-              break;
-            }
+          // Pause iframe if running
+          if (playerRef.current && isReadyRef.current && typeof playerRef.current.pauseVideo === 'function') {
+            try {
+              playerRef.current.pauseVideo();
+            } catch (e) {}
           }
-        } catch {
-          continue;
+        }
+      } catch (e) {
+        // Fall back to YouTube iFrame if direct audio extraction fails
+        if (!isCancelled) {
+          setUseNativeAudio(false);
         }
       }
     };
 
-    fetchAudioStream();
+    fetchAudioStreamParallel();
 
     return () => {
       isCancelled = true;
+      abortController.abort();
     };
   }, [youtubeId]);
 

@@ -461,12 +461,20 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
 
                 {/* Song title & artist */}
                 <div className="flex flex-col text-left max-w-[130px] sm:max-w-[200px] md:max-w-[280px] overflow-hidden">
-                  <h3 className="text-xs sm:text-sm font-bold text-white tracking-wide truncate">
-                    {activeTrack.title}
-                  </h3>
-                  <p className="text-[10px] sm:text-xs text-slate-300/90 truncate font-light">
-                    {activeTrack.artist}
-                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="text-xs sm:text-sm font-bold text-white tracking-wide truncate">
+                      {activeTrack.title}
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-[10px] sm:text-xs text-slate-300/90 truncate font-light">
+                      {activeTrack.artist}
+                    </p>
+                    <span className="hidden sm:inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0 font-medium">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Background Play
+                    </span>
+                  </div>
                 </div>
               </div>
 
