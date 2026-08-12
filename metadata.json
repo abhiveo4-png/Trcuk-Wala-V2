@@ -1,0 +1,8 @@
+{
+  "name": "Remix Truck Wala - Indian Highway Nostalgia",
+  "description": "An immersive, nostalgic tribute to Indian highway trucks, rain, iconic shayari, and timeless retro music.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
