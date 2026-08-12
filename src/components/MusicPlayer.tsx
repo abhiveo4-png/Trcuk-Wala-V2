@@ -91,6 +91,16 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
     );
   });
 
+  // Helper to extract YouTube Video ID from any URL or string
+  const extractYouTubeId = (input: string): string | null => {
+    const trimmed = input.trim();
+    if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+      return trimmed;
+    }
+    const match = trimmed.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([a-zA-Z0-9_-]{11})/);
+    return match ? match[1] : null;
+  };
+
   const handleSearchSubmit = async () => {
     const q = searchQuery.trim();
     if (!q) {
@@ -101,18 +111,135 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
     setIsSearchingYt(true);
     setYtSearchError('');
 
+    // 1. Direct YouTube Video Link or Video ID Check (Instant Zero-API)
+    const directYtId = extractYouTubeId(q);
+    if (directYtId) {
+      const directTrack: Track = {
+        id: `yt-direct-${directYtId}-${Date.now()}`,
+        youtubeId: directYtId,
+        title: `YouTube Video (${directYtId})`,
+        artist: 'Direct YouTube Link',
+        movie: 'YouTube Online Stream 📻',
+        duration: '4:00',
+        durationSeconds: 240,
+        thumbnail: `https://i.ytimg.com/vi/${directYtId}/hqdefault.jpg`,
+        description: 'Direct YouTube Stream'
+      };
+      setYtSearchResults([directTrack]);
+      setIsSearchingYt(false);
+      return;
+    }
+
     try {
-      const res = await fetch(`/api/youtube-search?q=${encodeURIComponent(q)}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.tracks && data.tracks.length > 0) {
-          setYtSearchResults(data.tracks);
-        } else {
-          setYtSearchResults([]);
-          setYtSearchError('YouTube par koi gana nahi mila. Koi doosra keyword type karein.');
+      let tracksFound: Track[] = [];
+      const encoded = encodeURIComponent(q);
+
+      // 2. Query free public open-source Invidious & Piped music mirrors
+      const publicEndpoints = [
+        `https://pipedapi.kavin.rocks/search?q=${encoded}&filter=all`,
+        `https://api.piped.privacydev.net/search?q=${encoded}&filter=all`,
+        `https://inv.tux.pizza/api/v1/search?q=${encoded}&type=video`,
+        `https://invidious.projectsegfau.lt/api/v1/search?q=${encoded}&type=video`,
+        `https://invidious.privacydev.net/api/v1/search?q=${encoded}&type=video`,
+      ];
+
+      for (const url of publicEndpoints) {
+        try {
+          const instController = new AbortController();
+          const instTimeout = setTimeout(() => instController.abort(), 2200);
+          const res = await fetch(url, { signal: instController.signal });
+          clearTimeout(instTimeout);
+
+          if (res.ok) {
+            const data = await res.json();
+            const items = Array.isArray(data) ? data : (data.items || []);
+            if (items.length > 0) {
+              tracksFound = items.slice(0, 8).map((item: any, idx: number) => {
+                const videoId = item.videoId || item.id?.videoId || (typeof item.id === 'string' ? item.id : null);
+                const title = item.title || item.snippet?.title || `${q} Track ${idx + 1}`;
+                const artist = item.uploaderName || item.author || item.snippet?.channelTitle || 'YouTube Stream';
+                const thumbnail = item.thumbnail || item.videoThumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+                const durationSec = item.duration || 250;
+
+                return {
+                  id: `yt-noapi-${videoId || idx}-${Date.now()}`,
+                  youtubeId: videoId || '',
+                  title,
+                  artist,
+                  movie: 'YouTube Stream 📻',
+                  duration: item.duration ? `${Math.floor(item.duration / 60)}:${String(item.duration % 60).padStart(2, '0')}` : '4:15',
+                  durationSeconds: durationSec,
+                  thumbnail,
+                  description: 'Online Stream'
+                };
+              }).filter((t: Track) => t.youtubeId);
+
+              if (tracksFound.length > 0) break;
+            }
+          }
+        } catch {
+          continue;
         }
+      }
+
+      // 3. Query Google Autosuggest + iTunes Music API (100% Uptime Zero-API Global CDN)
+      if (tracksFound.length === 0) {
+        try {
+          const suggestRes = await fetch(
+            `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=${encoded}`
+          );
+          if (suggestRes.ok) {
+            const suggestData = await suggestRes.json();
+            const suggestions: string[] = suggestData[1] || [];
+            
+            if (suggestions.length > 0) {
+              const topQuery = suggestions[0];
+              const itunesRes = await fetch(
+                `https://itunes.apple.com/search?term=${encodeURIComponent(topQuery)}&media=music&entity=song&limit=8`
+              );
+              if (itunesRes.ok) {
+                const itunesData = await itunesRes.json();
+                if (itunesData.results && itunesData.results.length > 0) {
+                  tracksFound = itunesData.results.map((item: any) => ({
+                    id: `track-noapi-${item.trackId}`,
+                    youtubeId: '',
+                    title: item.trackName,
+                    artist: item.artistName,
+                    movie: item.collectionName || 'Highway Online Stream 📻',
+                    duration: item.trackTimeMillis ? `${Math.floor(item.trackTimeMillis / 60000)}:${String(Math.floor((item.trackTimeMillis % 60000) / 1000)).padStart(2, '0')}` : '3:45',
+                    durationSeconds: Math.floor((item.trackTimeMillis || 220000) / 1000),
+                    thumbnail: item.artworkUrl100?.replace('100x100bb', '300x300bb') || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=300&q=80',
+                    description: 'Online Song Preview'
+                  }));
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 4. Fallback to /api/youtube-search if endpoint exists
+      if (tracksFound.length === 0) {
+        try {
+          const res = await fetch(`/api/youtube-search?q=${encoded}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.tracks && data.tracks.length > 0) {
+              tracksFound = data.tracks;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (tracksFound.length > 0) {
+        setYtSearchResults(tracksFound);
       } else {
-        setYtSearchError('YouTube search server timeout.');
+        setYtSearchResults([]);
+        setYtSearchError('Koi gana nahi mila. Koi doosra keyword ya YouTube Link paste karein.');
       }
     } catch (err) {
       console.error('YouTube search error:', err);
